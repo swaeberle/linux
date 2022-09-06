@@ -350,6 +350,12 @@ config SL28CPLD_WATCHDOG
 	  To compile this driver as a module, choose M here: the
 	  module will be called sl28cpld_wdt.
 
+config MSP_WDT
+	tristate "MSP Subdev0 (Watchdog)"
+	select WATCHDOG_CORE
+	help
+	  This driver is for MSP watchdog
+
 # ALPHA Architecture
 
 # ARM Architecture
