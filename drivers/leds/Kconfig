@@ -864,6 +864,14 @@ config LEDS_ACER_A500
 	  This option enables support for the Power Button LED of
 	  Acer Iconia Tab A500.
 
+config LEDS_MSP
+	tristate "LED Support for MSP chip"
+	depends on LEDS_CLASS && I2C
+	help
+	  This option enables support for LEDs connected to MSP LED driver chips
+	  accessed via the I2C bus.
+	  Driver support brightness control and hardware-assisted blinking.
+
 source "drivers/leds/blink/Kconfig"
 
 comment "Flash and Torch LED drivers"
