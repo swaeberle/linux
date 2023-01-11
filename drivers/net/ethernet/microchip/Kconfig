@@ -55,6 +55,19 @@ config LAN743X
 	  To compile this driver as a module, choose M here. The module will be
 	  called lan743x.
 
+config ENC624J600_PSP
+	tristate "ENC624J600 PSP 16-bit support"
+	help
+	  Support for the PSP modes of the Microchip ENC624J600 ethernet chip.
+
+	  This ethernet chip comes with several modes for parallel operation
+	  (PSP). The effective mode is determined by the number of attached
+	  pins and their bootstrap configuration. See the chip's datasheet for
+	  the full details on all possible combinations.
+
+	  To compile this driver as a module, choose M here. The module will be
+	  called enc624j600-psp.
+
 source "drivers/net/ethernet/microchip/sparx5/Kconfig"
 
 endif # NET_VENDOR_MICROCHIP
