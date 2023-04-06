@@ -12279,6 +12279,7 @@ MICROCHIP ENC624J600-PSP ETHERNET DRIVER
 M:	Stephan Wurm <stephan.wurm@a-eberle.de>
 L:	netdev@vger.kernel.org
 S:	Maintained
+F:	Documentation/devicetree/bindings/net/microchip,enc624j600-psp.yaml
 F:	drivers/net/ethernet/microchip/enc624j600_psp*
 
 MICROCHIP I2C DRIVER
