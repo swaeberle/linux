@@ -802,6 +802,12 @@ static void enc624j600_hw_enable(struct enc624j600_priv *priv)
 	enc624j600_write_reg(priv, EIE, (PCFULIE | RXABTIE | TXABTIE | TXIE |
 					 PKTIE | LINKIE | INTIE));
 
+	/* Wake-up Ethernet */
+	enc624j600_set_bits(priv, ECON2, (ETHEN | STRCH));
+
+	/* Wake-up PHY */
+	enc624j600_clr_bits(priv, ECON2, PSLEEP);
+
 	/* Enable RX */
 	enc624j600_cmd(priv, ENABLERX);
 
@@ -810,11 +816,38 @@ static void enc624j600_hw_enable(struct enc624j600_priv *priv)
 
 static void enc624j600_hw_disable(struct enc624j600_priv *priv)
 {
+	int timeout;
+
 	/* Disable all interrupts */
 	enc624j600_write_reg(priv, EIE, 0);
 
+	/* Turn off the Modular Exponentiation and AES engines */
+	enc624j600_clr_bits(priv, EIR, CRYPTEN);
+
 	/* Disable RX */
 	enc624j600_cmd(priv, DISABLERX);
+
+	/* Wait for any RX to finish */
+	timeout = 10;
+	while ((enc624j600_read_reg(priv, ESTAT) & RXBUSY) && --timeout)
+		usleep_range(25, 100);
+
+	if (timeout == 0)
+		pr_err("Timeout while waiting for RX to finish");
+
+	/* Wait for any TX to finish */
+	timeout = 10;
+	while ((enc624j600_read_reg(priv, ECON1) & TXRTS) && --timeout)
+		usleep_range(25, 100);
+
+	if (timeout == 0)
+		pr_err("Timeout while waiting for TX to finish");
+
+	/* Power-down PHY */
+	enc624j600_set_bits(priv, ECON2, PSLEEP);
+
+	/* Power-down Ethernet interface */
+	enc624j600_clr_bits(priv, ECON2, (ETHEN | STRCH));
 
 	priv->hw_enabled = false;
 }
