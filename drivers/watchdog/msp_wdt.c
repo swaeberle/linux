@@ -46,23 +46,19 @@
 #define MSP_WDT_OCCURED		0x01
 
 #define MSP_WDT_TIMEOUT_DEFAULT		120U
-#define MSP_WDT_PRETIMEOUT_DEFAULT	60U
+#define MSP_WDT_PRETIMEOUT_DEFAULT	90U
 #define MSP_WDT_TIMEOUT_MIN		1U
 #define MSP_WDT_TIMEOUT_MAX		86400U
 
-#define MSP_WDT_VERSION		"3.0.0"
+// Convert seconds to 8ms ticks
+#define MSP_WDT_SECS_TO_TICKS(s)	(s * 125)
+
+#define MSP_WDT_VERSION		"3.1.1"
 
 struct msp_wdt_data {
 	struct watchdog_device wdd;
 	struct i2c_client *client;
 };
-
-static int msp_wdt_ping(struct watchdog_device *wdd)
-{
-	struct i2c_client *client = to_i2c_client(wdd->parent);
-
-	return i2c_smbus_write_byte_data(client, MSP0_WDT_TRIGGER, 0x55);
-}
 
 static int __msp_wdt_write_reg(struct i2c_client *client,
 			       unsigned int reg, u8 value)
@@ -78,6 +74,13 @@ static int __msp_wdt_write_reg(struct i2c_client *client,
 	return 0;
 }
 
+static int msp_wdt_ping(struct watchdog_device *wdd)
+{
+	struct i2c_client *client = to_i2c_client(wdd->parent);
+
+	return __msp_wdt_write_reg(client, MSP0_WDT_TRIGGER, 0x55);
+}
+
 static int __msp_wdt_set_timeout(struct watchdog_device *wdd,
 				 unsigned int new_timeout)
 {
@@ -88,7 +91,7 @@ static int __msp_wdt_set_timeout(struct watchdog_device *wdd,
 
 	dev_info(&client->dev, "set watchdog timeout to %d sec\n", new_timeout);
 
-	tick_timeout = new_timeout * 125; // 1 tick = 8 ms
+	tick_timeout = MSP_WDT_SECS_TO_TICKS(new_timeout);
 	if (__msp_wdt_write_reg(client, MSP0_WDT_TO_LOW, (u8)(tick_timeout & 0xff)))
 		return ret;
 	if (__msp_wdt_write_reg(client, MSP0_WDT_TO_MID, (u8)((tick_timeout >> 8) & 0xff)))
@@ -124,7 +127,7 @@ static int msp_wdt_set_pretimeout(struct watchdog_device *wdd,
 
 	dev_info(&client->dev, "set watchdog pretimeout to %d sec\n", new_pretimeout);
 
-	tick_timeout = new_pretimeout * 125; // 1 tick = 8 ms
+	tick_timeout = MSP_WDT_SECS_TO_TICKS(new_pretimeout);
 	if (__msp_wdt_write_reg(client, MSP0_WDT_WARN_LOW, (u8)(tick_timeout & 0xff)))
 		return ret;
 	if (__msp_wdt_write_reg(client, MSP0_WDT_WARN_MID, (u8)((tick_timeout >> 8) & 0xff)))
@@ -132,7 +135,7 @@ static int msp_wdt_set_pretimeout(struct watchdog_device *wdd,
 	if (__msp_wdt_write_reg(client, MSP0_WDT_WARN_HIGH, (u8)((tick_timeout >> 16) & 0xff)))
 		return ret;
 
-	// Set WARN_ENA flag, enabling pretimeout interrupt
+	// Update WARN_ENA flag
 	ret = i2c_smbus_read_byte_data(client, MSP0_STATUS);
 	if (ret < 0) {
 		dev_err(&client->dev, "%s failed, reg: %d, error: %d\n",
@@ -140,7 +143,13 @@ static int msp_wdt_set_pretimeout(struct watchdog_device *wdd,
 		return ret;
 	}
 	status = (u8)ret;
-	status |= MSP_WDT_WARN_ENA;
+	if (new_pretimeout) {
+		// Enable pre-timeout interrupt
+		status |= MSP_WDT_WARN_ENA;
+	} else {
+		// Disable pre-timeout interrupt
+		status &= ~MSP_WDT_WARN_ENA;
+	}
 	ret = __msp_wdt_write_reg(client, MSP0_STATUS, status);
 	if (ret)
 		return ret;
@@ -160,8 +169,7 @@ static int msp_wdt_set_timeouts(struct watchdog_device *wdd)
 		if (ret)
 			goto out;
 	}
-	if (wdd->pretimeout)
-		ret = msp_wdt_set_pretimeout(wdd, wdd->pretimeout);
+	ret = msp_wdt_set_pretimeout(wdd, wdd->pretimeout);
 out:
 	return ret;
 }
@@ -169,11 +177,6 @@ out:
 static int msp_wdt_start(struct watchdog_device *wdd)
 {
 	return msp_wdt_set_timeouts(wdd);
-}
-
-static int msp_wdt_stop(struct watchdog_device *wdd)
-{
-	return 0;
 }
 
 static const struct watchdog_info msp_wdt_info = {
@@ -184,7 +187,6 @@ static const struct watchdog_info msp_wdt_info = {
 static const struct watchdog_ops msp_wdt_ops = {
 	.owner		= THIS_MODULE,
 	.start		= msp_wdt_start,
-	.stop		= msp_wdt_stop,
 	.ping		= msp_wdt_ping,
 	.set_timeout	= msp_wdt_set_timeout,
 	.set_pretimeout	= msp_wdt_set_pretimeout,
@@ -199,30 +201,37 @@ static irqreturn_t msp_wdt_irq_handler(int irq, void *dev_id)
 	struct msp_wdt_data *wdev = dev_id;
 	struct watchdog_device *wdd = &wdev->wdd;
 	struct i2c_client *client = wdev->client;
-	s32 error;
-	u8 reg;
+	int ret;
+	u8 status;
 
-	error = i2c_smbus_read_byte_data(client, MSP0_STATUS);
-	if (error < 0) {
+	ret = i2c_smbus_read_byte_data(client, MSP0_STATUS);
+	if (ret < 0) {
 		dev_err(&client->dev,
 			"%s failed, reg: %d, error: %d\n", __func__,
-			MSP0_STATUS, error);
+			MSP0_STATUS, ret);
 		return IRQ_NONE;
 	}
-	reg = (u8)error;
+	status = (u8)ret;
 
-	if (reg & MSP_WDT_WARN_FLAG) {
-		if (!(reg & MSP_WDT_WARN_ENA)) {
+	if (status & MSP_WDT_WARN_FLAG) {
+		if (!(status & MSP_WDT_WARN_ENA)) {
 			dev_err(&client->dev,
 				"watchdog warning without warn enable!\n");
 			return IRQ_NONE;
 		}
 		// Clear WARN_FLAG, preventing IRQ flooding
-		__msp_wdt_write_reg(client, MSP0_STATUS, reg & ~MSP_WDT_WARN_FLAG);
+		status &= ~MSP_WDT_WARN_FLAG;
+		__msp_wdt_write_reg(client, MSP0_STATUS, status);
 		watchdog_notify_pretimeout(wdd);
 		return IRQ_HANDLED;
 	}
 	return IRQ_NONE;
+}
+
+static int __msp_wdt_pretimeout_invalid(struct watchdog_device *wdd,
+					unsigned int new_pretimeout)
+{
+	return new_pretimeout > wdd->timeout;
 }
 
 static int msp_wdt_init_pretimeout(struct watchdog_device *wdd,
@@ -234,7 +243,7 @@ static int msp_wdt_init_pretimeout(struct watchdog_device *wdd,
 	/* try to get the pretimeout_sec property */
 	if (dev && dev->of_node &&
 	    of_property_read_u32(dev->of_node, "pretimeout-sec", &t) == 0) {
-		if (t && !watchdog_timeout_invalid(wdd, t)) {
+		if (!__msp_wdt_pretimeout_invalid(wdd, t)) {
 			wdd->pretimeout = t;
 			return 0;
 		}
@@ -261,7 +270,7 @@ static int msp_wdt_i2c_init(struct i2c_client *client, struct msp_wdt_data *wdev
 {
 	struct watchdog_device *wdd;
 	int ret;
-	u8 reg;
+	u8 status;
 
 	if (!client)
 		return -ENODEV;
@@ -286,18 +295,14 @@ static int msp_wdt_i2c_init(struct i2c_client *client, struct msp_wdt_data *wdev
 			__func__, MSP0_STATUS, ret);
 		return ret;
 	}
-	reg = (u8)ret;
-	if (reg & MSP_WDT_OCCURED) {
+	status = (u8)ret;
+	if (status & MSP_WDT_OCCURED) {
 		dev_info(&client->dev, "watchdog timeout occurred!\n");
 		wdd->bootstatus = WDIOF_CARDRESET;
-		reg &= ~MSP_WDT_OCCURED;
-		ret = i2c_smbus_write_byte_data(client, MSP0_STATUS, reg);
-		if (ret < 0) {
-			dev_err(&client->dev,
-				"%s failed to write reg: %d, error: %d\n",
-				__func__, MSP0_STATUS, ret);
+		status &= ~MSP_WDT_OCCURED;
+		ret = __msp_wdt_write_reg(client, MSP0_STATUS, status);
+		if (ret)
 			return ret;
-		}
 	}
 
 	return 0;
@@ -323,9 +328,11 @@ static int msp_wdt_probe(struct i2c_client *client,
 	wdd->ops			= &msp_wdt_ops;
 	wdd->min_timeout		= MSP_WDT_TIMEOUT_MIN;
 	wdd->max_timeout		= MSP_WDT_TIMEOUT_MAX;
+	wdd->max_hw_heartbeat_ms	= MSP_WDT_TIMEOUT_MAX * 1000;
 	wdd->timeout			= MSP_WDT_TIMEOUT_DEFAULT;
 	wdd->pretimeout			= MSP_WDT_PRETIMEOUT_DEFAULT;
 	wdd->parent			= dev;
+	wdd->status			= WATCHDOG_NOWAYOUT_INIT_STATUS;
 
 	wdev->client = client;
 
